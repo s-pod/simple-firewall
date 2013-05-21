@@ -7,6 +7,7 @@
 
 #include "rule_manager.h"
 
+static rule_t *kmalloc_ptr_rule;
 
 void loadInitRules(void){
 	//*******;
@@ -20,7 +21,7 @@ void loadInitRules(void){
  *				1 = src and dest are *NOT* allowed to converse.
  *				-1 = christmas egg?
  */
-int checkRules(int active) {
+int checkRules(int active, int tcp, int udp, int icmp) {
 	rule_t *temp;
 	int i;
 	__u8 protocol, src_mask, dst_mask, action;

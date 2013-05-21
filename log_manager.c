@@ -7,6 +7,11 @@
 
 #include "log_manager.h"
 
+
+static log_row_t *kmalloc_ptr_log = NULL;
+static int logEntriesNum = 0;
+
+
 /*
  * Write the descision the kernel log (with all parameters).
  */

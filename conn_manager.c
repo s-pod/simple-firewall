@@ -7,6 +7,7 @@
 
 #include "conn_manager.h"
 
+static connection_t *kmalloc_ptr_connection;
 
  /*
   * This function returns if src is the client or the server in the conversation
