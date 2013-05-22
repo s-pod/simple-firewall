@@ -171,9 +171,10 @@ MODULE_LICENSE("GPL")
 static void deleteAllConversations(void);
 
 static void updateLogEntry(int i);
-static void writeNewLogEntry(int i, unsigned char protocol, unsigned char action,
-		unsigned char hooknum, unsigned int src_ip, unsigned int dst_ip, unsigned short src_port,
-					unsigned short dst_port ,int reason);
+static void writeNewLogEntry(int i, unsigned char protocol,
+		unsigned char action, unsigned char hooknum, unsigned int src_ip,
+		unsigned int dst_ip, unsigned short src_port, unsigned short dst_port,
+		int reason);
 static unsigned char getState(int i);
 static void updateConversation(int i, unsigned char state, int toUpdateExpire,
 		int RST);
@@ -181,7 +182,6 @@ static int getRulesSize(void);
 static int getLogSize(void);
 static int getConnectionTableSize(void);
 static int returnBit(long flag, int i);
-
 
 static ssize_t rules_config_show(struct device *dev,
 		struct device_attribute *attr, char *buf);
@@ -231,7 +231,6 @@ static void classAndDevicesAndAttributesCleanUP(void);
 
 static int run(/*char *msg*/);
 
-
 /* parameters */
 // pointer to the kmalloc'd areas, rounded up to a page boundary
 static rule_t *kmalloc_ptr_rule = NULL; // TODO: to make sure it's okay to start to NULL...
@@ -267,7 +266,6 @@ static int tcp = 0;
 static int udp = 0;
 static int conn_track = 0;
 static int cleanup_accept = 0;
-
 
 static int Rules_Device_Open = 0;
 static int Log_Device_Open = 0;
@@ -322,7 +320,6 @@ static attribute_functions_store store_funcs[ATTRIBUTES_NUM] = {
 		rules_config_store, rules_size_store, log_size_store, log_clear_store,
 		conn_tab_size_store, conn_tab_clear_store };
 
-
 /*
  * *************************************************************************
  * ************************** PACKET FUNCTIONS *****************************
@@ -335,33 +332,33 @@ static attribute_functions_store store_funcs[ATTRIBUTES_NUM] = {
  * Return value:
  * 				0 = The packet was dropped
  *				1 = The packet was accepted.
-*/
- static int decidePacketFate(void) {
+ */
+static int decidePacketFate(void) {
 
 	return 0;
 
- }
+}
 
- /*
-  * This function checks to see if a string str is a number that is unsigned int
-  * If True it returns the value in *num.
-  * Return Value:
-  * 				 0 = all good - the number is in unsigned int range
-  * 				-1 = There was an error in the parsing
-  */
- static int checkUInt(const char *str, long *num) {
- 	 long result, status;
- 	 if (strlen(str) > MAX_INT_LENGTH) {
- 	 	return -1;
- 	 }
- 	 status = kstrtol(str, BASE, &result);
- 	 if (status == -ERANGE || status == -EINVAL) {
- 	 	*num = 0;
- 	 	return -1;
- 	 }
- 	 *num = result;
- 	return 0;
- }
+/*
+ * This function checks to see if a string str is a number that is unsigned int
+ * If True it returns the value in *num.
+ * Return Value:
+ * 				 0 = all good - the number is in unsigned int range
+ * 				-1 = There was an error in the parsing
+ */
+static int checkUInt(const char *str, long *num) {
+	long result, status;
+	if (strlen(str) > MAX_INT_LENGTH) {
+		return -1;
+	}
+	status = kstrtol(str, BASE, &result);
+	if (status == -ERANGE || status == -EINVAL) {
+		*num = 0;
+		return -1;
+	}
+	*num = result;
+	return 0;
+}
 
 // /*
 //  * This function checks to see if a string str is a number that *int*
@@ -396,9 +393,10 @@ static void updateLogEntry(int i) {
 	(kmalloc_ptr_log[i].count)++;
 }
 
-static void writeNewLogEntry(int i, unsigned char protocol, unsigned char action,
-		unsigned char hooknum, unsigned int src_ip, unsigned int dst_ip, unsigned short src_port,
-					unsigned short dst_port ,int reason) {
+static void writeNewLogEntry(int i, unsigned char protocol,
+		unsigned char action, unsigned char hooknum, unsigned int src_ip,
+		unsigned int dst_ip, unsigned short src_port, unsigned short dst_port,
+		int reason) {
 
 	log_row_t *temp = kmalloc_ptr_log;
 	do_gettimeofday(&time);
@@ -526,13 +524,13 @@ static int checkRules() {
 // 	return index;
 // }
 
- /*
-  * This function returns the current state of the conversation.
-  */
- static unsigned char getState(int i) {
- 	connection_t *temp = kmalloc_ptr_connection;
- 	return temp[i].state;
- }
+/*
+ * This function returns the current state of the conversation.
+ */
+static unsigned char getState(int i) {
+	connection_t *temp = kmalloc_ptr_connection;
+	return temp[i].state;
+}
 
 /*
  * This function updates the state of the conversation i to the state "state"
@@ -571,7 +569,7 @@ static int findConversation(unsigned int cli_ip, unsigned int ser_ip,
 	connection_t *temp = kmalloc_ptr_connection;
 	index = -1;
 	for (i = 0; i < CONNECTION_TABLE_ENTRIES; i++) {
-		if (temp != NULL) {
+		if (temp != NULL ) {
 			//*******;
 			//TODO: here!!
 		}
@@ -621,16 +619,16 @@ static int getRulesSize(void) {
 	return count * sizeof(rule_t);
 }
 
-static int getLogSize(void){
+static int getLogSize(void) {
 	return logEntriesNum * sizeof(log_row_t);
 }
 
-static int getConnectionTableSize(void){
+static int getConnectionTableSize(void) {
 	int i;
 	int count = 0;
 	connection_t *temp = kmalloc_ptr_connection;
 
-	for (i = 0; i < CONNECTION_TABLE_ENTRIES; i++){
+	for (i = 0; i < CONNECTION_TABLE_ENTRIES; i++) {
 		do_gettimeofday(&time);
 		if (time.tv_sec <= temp->expires)
 			count++;
@@ -670,10 +668,10 @@ static void createConversation(int i) {
 
 }
 
-static int getConfigBits(char *config){
+static int getConfigBits(char *config) {
 	long temp;
 	int status = checkUInt(config, &temp);
-	if (status != 0){
+	if (status != 0) {
 		return -1;
 	}
 	active = returnBit(temp, FW_CONFIG_ACTIVE);
@@ -686,21 +684,21 @@ static int getConfigBits(char *config){
 	return 0;
 }
 
-static int returnBit(long flag, int i){
-	int shift = sizeof(long)*BITS_IN_BYTE;
-	int temp = (flag << (shift - i)) >> (shift -1);
+static int returnBit(long flag, int i) {
+	int shift = sizeof(long) * BITS_IN_BYTE;
+	int temp = (flag << (shift - i)) >> (shift - 1);
 	return temp;
 
 }
 
-static int showConfigurationBits(void){
+static int showConfigurationBits(void) {
 	//******;
 }
 
-static void clearLog(void){
+static void clearLog(void) {
 	int i;
 	log_row_t *temp = kmalloc_ptr_log;
-	for (i = 0; i < logEntriesNum; i++){
+	for (i = 0; i < logEntriesNum; i++) {
 		temp->protocol = 0;
 		temp->modified = 0;
 		temp->protocol = 0;
@@ -717,7 +715,7 @@ static void clearLog(void){
 	logEntriesNum = 0;
 }
 
-static void loadInitRules(void){
+static void loadInitRules(void) {
 	//*******;
 }
 
@@ -735,14 +733,14 @@ static ssize_t rules_config_store(struct device *dev,
 
 	int status;
 	char *config = (char *) kmalloc(sizeof(char) * (count + 1), GFP_KERNEL);
-	 if (config == NULL ) {
-	 	// malloc failed
-	 	return count;
-	 }
+	if (config == NULL ) {
+		// malloc failed
+		return count;
+	}
 	strncpy(config, buf, count);
 	config[count] = '\0';
 	status = getConfigBits(config);
-	if (status != 0){
+	if (status != 0) {
 		// bad input to configuration - we ignore it.
 	}
 
@@ -1049,15 +1047,15 @@ static void classAndDevicesAndAttributesCleanUP(void) {
 	classAndDevicesAndAttrubuteStructCleanUP();
 }
 
-static unsigned int hook_func(unsigned int hooknum,
-                        struct sk_buff *skb,
-                                const struct net_device *in,
-                                const struct net_device *out,
-                                int (*okfn)(struct sk_buff *))
-{
-        sock_buff = skb;
-        printk("Woohoo a packet!\n");
-        return NF_ACCEPT;
+static unsigned int hook_func(unsigned int hooknum, struct sk_buff *skb,
+		const struct net_device *in, const struct net_device *out,
+		int (*okfn)(struct sk_buff *)) {
+	sock_buff = skb;
+	struct iphdr* iph = ip_hdr(skb);
+	struct tcphdr* tcph = tcp_hdr(skb);
+	struct udphdr* udph = udp_hdr(skb);
+	printk("Woohoo a packet src: %d dst: %d!\n", iph->saddr, iph->daddr);
+	return NF_ACCEPT;
 }
 
 /*
@@ -1069,9 +1067,9 @@ static int hello_init(void) {
 	int err = 0;
 	dev_t dev = 0;
 
-	nfho.hook     = hook_func;
-	nfho.hooknum  = 0;
-	nfho.pf       = PF_INET;
+	nfho.hook = hook_func;
+	nfho.hooknum = 0;
+	nfho.pf = PF_INET;
 	nfho.priority = 0;
 	nf_register_hook(&nfho);
 
@@ -1191,7 +1189,6 @@ static void hello_cleanup(void) {
 	newMmapCleanup();
 	return;
 }
-
 
 /* This function runs the firewall on a packet.
  * Return value:
