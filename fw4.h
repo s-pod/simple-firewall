@@ -7,6 +7,7 @@
 
 #ifndef FW4_H_
 #define FW4_H_
+
 #include "global.h"
 
 // the 3 protocols we will work with
@@ -91,6 +92,6 @@ typedef enum {
 	TCP_CONN_CLOSING = 4,
 } tcp_conn_t;
 
-
+struct timeval time;
 
 #endif /* FW4_H_ */
