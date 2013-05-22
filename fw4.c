@@ -152,29 +152,9 @@ static struct fw_dev {
 MODULE_LICENSE("GPL")
 ;
 
-// static int decidePacketFate(int source, int destination, int sequence,
-// 		char *command);
-// static int checkNumber(const char *str, unsigned int *num);
-// static int checkNumber2(char *str, int *num);
-// static int decodeLine(char *str, int *sourceID, int *destID, int *seqNum,
-// 		char *command);
-// static void writeDecision(int source, int dest, char verdict, char * reason);
-// static int nextState(state_t curr, char *command, int client);
-// static int checkRules(__u8 src, __u8 dest);
-// static void deleteConnection(connection_t *i);
-// static int getSide(connection_t *i, int src);
-// static int getState(connection_t *i);
-// static void updateConnection(connection_t *i, int state);
-// static connection_t *findConnection(__u8 src, __u8 dest);
-// static void createConnection(__u8 src, __u8 dest, __u8 seq);
 
 static void deleteAllConversations(void);
-
 static void updateLogEntry(int i);
-static void writeNewLogEntry(int i, unsigned char protocol,
-		unsigned char action, unsigned char hooknum, unsigned int src_ip,
-		unsigned int dst_ip, unsigned short src_port, unsigned short dst_port,
-		int reason);
 static unsigned char getState(int i);
 static void updateConversation(int i, unsigned char state, int toUpdateExpire,
 		int RST);
@@ -182,6 +162,9 @@ static int getRulesSize(void);
 static int getLogSize(void);
 static int getConnectionTableSize(void);
 static int returnBit(long flag, int i);
+static void loadInitialRules(void);
+static int showConfigurationBits(void);
+static unsigned int shiftBitToPlaceIAndBitwiseOR(int a, int i);
 
 static ssize_t rules_config_show(struct device *dev,
 		struct device_attribute *attr, char *buf);
@@ -229,7 +212,8 @@ static void classAndDevicesStructCleanUp(void);
 static void classAndDevicesCleanUP(void);
 static void classAndDevicesAndAttributesCleanUP(void);
 
-static int run(/*char *msg*/);
+static int run(/*char *msg*/void);
+
 
 /* parameters */
 // pointer to the kmalloc'd areas, rounded up to a page boundary
@@ -245,7 +229,9 @@ static struct file_operations log_fops = { .owner = THIS_MODULE, .mmap =
 static struct file_operations conn_tab_fops = { .owner = THIS_MODULE, .mmap =
 		fw4_conn_tab_mmap, .open = conn_tab_open, .release = conn_tab_release, };
 
-struct timeval time;
+static struct timeval time;
+static ssize_t configBitsAsNumber;
+
 static unsigned long buffer_size = 4000;
 static unsigned long block_size = 512;
 static int devices_to_destroy = 0;
@@ -266,6 +252,7 @@ static int tcp = 0;
 static int udp = 0;
 static int conn_track = 0;
 static int cleanup_accept = 0;
+
 
 static int Rules_Device_Open = 0;
 static int Log_Device_Open = 0;
@@ -319,6 +306,7 @@ static attribute_functions_show show_funcs[ATTRIBUTES_NUM] = {
 static attribute_functions_store store_funcs[ATTRIBUTES_NUM] = {
 		rules_config_store, rules_size_store, log_size_store, log_clear_store,
 		conn_tab_size_store, conn_tab_clear_store };
+
 
 /*
  * *************************************************************************
@@ -393,22 +381,19 @@ static void updateLogEntry(int i) {
 	(kmalloc_ptr_log[i].count)++;
 }
 
-static void writeNewLogEntry(int i, unsigned char protocol,
-		unsigned char action, unsigned char hooknum, unsigned int src_ip,
-		unsigned int dst_ip, unsigned short src_port, unsigned short dst_port,
-		int reason) {
+static void writeNewLogEntry() {
 
 	log_row_t *temp = kmalloc_ptr_log;
-	do_gettimeofday(&time);
-	temp[i].modified = time.tv_sec;
-	temp[i].protocol = protocol;
-	temp[i].action = action;
-	temp[i].hooknum = hooknum;
-	temp[i].src_ip = src_ip;
-	temp[i].dst_ip = dst_ip;
-	temp[i].src_port = src_port;
-	temp[i].dst_port = dst_port;
-	temp[i].count = 1;
+//	do_gettimeofday(&time);
+//	temp[i].modified = time.tv_sec;
+//	temp[i].protocol = protocol;
+//	temp[i].action = action;
+//	temp[i].hooknum = hooknum;
+//	temp[i].src_ip = src_ip;
+//	temp[i].dst_ip = dst_ip;
+//	temp[i].src_port = src_port;
+//	temp[i].dst_port = dst_port;
+//	temp[i].count = 1;
 
 	logEntriesNum++;
 }
@@ -437,40 +422,40 @@ static void writeNewLogEntry(int i, unsigned char protocol,
 static int checkRules() {
 	rule_t *temp;
 	int i;
-	__u8 protocol, src_mask, dst_mask, action;
-	__be16 src_port, dst_port;
-	__be32 src_ip, dst_ip;
+//	__u8 protocol, src_mask, dst_mask, action;
+//	__be16 src_port, dst_port;
+//	__be32 src_ip, dst_ip;
 
-	if (active == 0) { // TODO: to delete this?
+	if (active == 0) {
 		// The default rule accept rule is enables - also if we're here then we are in legal range.
 		return 0;
 	}
 
 	// We have rules to check! Woohoo!
 	temp = kmalloc_ptr_rule;
-	i = 0;
-	do {
-
-		protocol = temp->protocol;
-		src_mask = temp->src_mask;
-		dst_mask = temp->dst_mask;
-		action = temp->action;
-		src_port = temp->src_port;
-		dst_port = temp->dst_port;
-		src_ip = temp->src_ip;
-		dst_ip = temp->dst_ip;
-		temp++;
-
-		if ((protocol == PROT_TCP && tcp == 0)
-				|| (protocol == PROT_UDP && udp == 0)
-				|| (protocol == PROT_ICMP && icmp == 0)) {
-			return 0;
-		}
-
-		// TODO: to continue here!!!!
-		//*********;
-
-	} while (protocol != 255);
+//	i = 0;
+//	do {
+//
+//		protocol = temp->protocol;
+//		src_mask = temp->src_mask;
+//		dst_mask = temp->dst_mask;
+//		action = temp->action;
+//		src_port = temp->src_port;
+//		dst_port = temp->dst_port;
+//		src_ip = temp->src_ip;
+//		dst_ip = temp->dst_ip;
+//		temp++;
+//
+//		if ((protocol == PROT_TCP && tcp == 0)
+//				|| (protocol == PROT_UDP && udp == 0)
+//				|| (protocol == PROT_ICMP && icmp == 0)) {
+//			return 0;
+//		}
+//
+//		// TODO: to continue here!!!!
+//		//*********;
+//
+//	} while (protocol != 255);
 
 	return i;
 }
@@ -556,8 +541,7 @@ static void updateConversation(int i, unsigned char state, int toUpdateExpire,
 //  *					The place of the conversation in the conversations array >= 0
 //  *					-1 = There is no such conversation.
 //  */
-static int findConversation(unsigned int cli_ip, unsigned int ser_ip,
-		unsigned short cli_port, unsigned short ser_port) {
+static int findConversation() {
 	int i;
 	int index;
 //	struct timeval currTime;
@@ -568,12 +552,12 @@ static int findConversation(unsigned int cli_ip, unsigned int ser_ip,
 
 	connection_t *temp = kmalloc_ptr_connection;
 	index = -1;
-	for (i = 0; i < CONNECTION_TABLE_ENTRIES; i++) {
-		if (temp != NULL ) {
-			//*******;
-			//TODO: here!!
-		}
-	}
+//	for (i = 0; i < CONNECTION_TABLE_ENTRIES; i++) {
+//		if (temp != NULL) {
+//			*******;
+//			//TODO: here!!
+//		}
+//	}
 	// conversation_t *temp = conversationsHead;
 	// while (temp != NULL ) {
 	// 	if ((temp->client_id == src && temp->server_id == dest)
@@ -670,6 +654,7 @@ static void createConversation(int i) {
 
 static int getConfigBits(char *config) {
 	long temp;
+	unsigned int result;
 	int status = checkUInt(config, &temp);
 	if (status != 0) {
 		return -1;
@@ -680,6 +665,21 @@ static int getConfigBits(char *config) {
 	udp = returnBit(temp, FW_CONFIG_UDP);
 	conn_track = returnBit(temp, FW_CONFIG_CONN_TRACK);
 	cleanup_accept = returnBit(temp, FW_CONFIG_CLEANUP_ACCEPT);
+
+	result = 0;
+	if (active)
+		result = shiftBitToPlaceIAndBitwiseOR(result ,FW_CONFIG_ACTIVE);
+	if (icmp)
+		result = shiftBitToPlaceIAndBitwiseOR(result ,FW_CONFIG_ICMP);
+	if (tcp)
+		result = shiftBitToPlaceIAndBitwiseOR(result ,FW_CONFIG_TCP);
+	if (udp)
+		result = shiftBitToPlaceIAndBitwiseOR(result ,FW_CONFIG_UDP);
+	if (conn_track)
+		result = shiftBitToPlaceIAndBitwiseOR(result ,FW_CONFIG_CONN_TRACK);
+	if (cleanup_accept)
+		result = shiftBitToPlaceIAndBitwiseOR(result ,FW_CONFIG_CLEANUP_ACCEPT);
+	configBitsAsNumber = result;
 
 	return 0;
 }
@@ -692,7 +692,13 @@ static int returnBit(long flag, int i) {
 }
 
 static int showConfigurationBits(void) {
-	//******;
+	return configBitsAsNumber;
+}
+
+static unsigned int shiftBitToPlaceIAndBitwiseOR(int a, int i){
+	unsigned int temp = 1;
+	temp = (temp << (i - 1));
+	return temp & a;
 }
 
 static void clearLog(void) {
@@ -715,8 +721,8 @@ static void clearLog(void) {
 	logEntriesNum = 0;
 }
 
-static void loadInitRules(void) {
-	//*******;
+static void loadInitialRules(void){
+	//*******; //TODO: to add here!
 }
 
 // ****************************************************************************
@@ -774,8 +780,7 @@ static ssize_t log_clear_show(struct device *dev, struct device_attribute *attr,
 
 static ssize_t log_clear_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count) {
-	// TODO: to add here protection agains strings and long numbers?!
-	if (count > 0)
+	if (count  ==2 )
 		clearLog();
 	return count;
 }
@@ -798,8 +803,7 @@ static ssize_t conn_tab_clear_show(struct device *dev,
 static ssize_t conn_tab_clear_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count) {
 
-	// TODO: to add here protection against strings  and long numbers?
-	if (count > 0)
+	if (count == 2)
 		deleteAllConversations();
 	return count;
 }
@@ -1195,7 +1199,7 @@ static void hello_cleanup(void) {
  *				0 = The packet was dropped or the numbers were not numbers or there was an error in the strings like From or To...
  *				1 = All good - the packet was accepted.
  */
-static int run(/*char *msg*/) {
+static int run(/*char *msg*/void) {
 	// char command[MAX_LINE_LENGTH];
 	//int check;
 	// int src_id, dest_id, seq_num;
