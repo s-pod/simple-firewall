@@ -33,12 +33,13 @@
 #define MAX_INT_LENGTH 11
 #define BASE 10
 
-#define NAME_MAX_COPY 15 //TODO: to check that the random number is correct....
+#define NAME_MAX_COPY 15
 #define PERMISSION 0666
 #define DEVICES_NUM 3
 #define SUCCESS 0
 #define ATTRIBUTES_NUM 6
 #define ATTRIBUTE_FUNCTIONS 6
+#define ATTRIBUTES_PER_DEVICE 2
 #define DEVICE_RULES 0
 #define DEVICE_LOG 1
 #define DEVICE_CONN_TAB 2
@@ -51,11 +52,21 @@
 #define CONN_TAB_CLEAR 5
 #define FIVE_MINUTES 300 // five minutes in seconds 5*60 == 300
 #define BITS_IN_BYTE 8
+#define LAST_RULE_PROTOCOL_ENTRY 255
 
 #define LOCALHOST 16777343
 #define FIVE_SECONDS 5
 #define FIVE_MINUTES 300
 #define IPV4 4
+#define NO_MATCHING_RULE_FOUND 2
+#define FIRST_BYTE 0xFF
+#define ALL_BITS_ARE_ONES 0xFFFFFFFF
+#define PERMISSION_PARAM_1 "/bin/bash"
+#define PERMISSION_PARAM_2 "-c"
+#define PERMISSION_PARAM_3_A "/bin/chmod 666 /dev/fw4_rules"
+#define PERMISSION_PARAM_3_B "/bin/chmod 644 /dev/fw4_log"
+#define PERMISSION_PARAM_3_C "/bin/chmod 644 /dev/fw4_conn_tab"
+
 // the 3 protocols we will work with
 typedef enum {
 	PROT_ICMP = 1, PROT_TCP = 6, PROT_UDP = 17,
@@ -149,7 +160,6 @@ static struct fw_dev {
 	unsigned char *data;
 	unsigned long buffer_size;
 	unsigned long block_size;
-//	struct mutex fw_mutex;
 	struct cdev cdev;
 	struct device *dev;
 };
@@ -161,7 +171,9 @@ static int cmprMask(unsigned int src_ip, unsigned int dst_ip,
 static void deleteAllConversations(void);
 static int findConversation(void);
 static void updateLogEntry(int i);
-static void writeNewLogEntry(int i, unsigned char packet_hooknum,
+static void writeToLog(unsigned int packet_hooknum, unsigned char packet_action,
+		int packet_reason);
+static void writeNewLogEntry(log_row_t *temp, unsigned int packet_hooknum,
 		unsigned char packet_action, int packet_reason);
 static int updateConversation(int i);
 static int returnBit(__u8 flag, int i);
@@ -214,13 +226,11 @@ static void classAndDevicesStructCleanUp(void);
 static void classAndDevicesCleanUP(void);
 static void classAndDevicesAndAttributesCleanUP(void);
 
-static int run(/*char *msg*/void);
-
 /* parameters */
 // pointer to the kmalloc'd areas, rounded up to a page boundary
-static rule_t *kmalloc_ptr_rule = NULL; // TODO: to make sure it's okay to start to NULL...
-static connection_t *kmalloc_ptr_connection = NULL; // TODO: to make sure it's okay to start to NULL...
-static log_row_t *kmalloc_ptr_log = NULL; // TODO: to make sure it's okay to start to NULL...
+static rule_t *kmalloc_ptr_rule = NULL;
+static connection_t *kmalloc_ptr_connection = NULL;
+static log_row_t *kmalloc_ptr_log = NULL;
 
 // Defining the needed fops files
 static struct file_operations rules_fops = { .owner = THIS_MODULE, .mmap =
@@ -238,11 +248,7 @@ static unsigned long block_size = 512;
 static int devices_to_destroy = 0;
 static int attributes_to_destroy = 0;
 
-//static int connectionsSize = 0;
-//static int rulesSize = 0;
-
 static int rule_num = 0;
-static int logEntriesNum = 0;
 
 static struct class *fw_class = NULL;
 static struct fw_dev *devices = NULL;
@@ -256,6 +262,7 @@ static int udp = 0;
 static int conn_track = 0;
 static int cleanup_accept = 0;
 
+// variables for open functions
 static int Rules_Device_Open = 0;
 static int Log_Device_Open = 0;
 static int Conn_Tab_Device_Open = 0;
@@ -269,17 +276,13 @@ static struct nf_hook_ops nfho_out;
 static struct tcphdr *tcp_header;
 static struct iphdr *ip_header;
 static struct udphdr *udp_header;
-static int hook_num;
 
-static const char *REASONS[] = { "FW_CONFIG_ACTIVE", "FW_CONFIG_ICMP",
-		"FW_CONFIG_TCP", "FW_CONFIG_UDP", "FW_CONFIG_CONN_TRACK",
-		"FW_CONFIG_CLEANUP_ACCEPT", };
 static /*const*/char *attr_names[] = { "config", "rules_size", "log_size",
 		"log_clear", "conn_tab_size", "conn_tab_clear", };
 
 /*
  * These are the permissions for the attributes as we should define
- * according to the instructions  // TODO: do we need execute permissions for all?????
+ * according to the instructions
  * 0X00 - X is the use bit
  * 00X0 - X is the group bit
  * 000X - X is the others bit
@@ -320,15 +323,16 @@ static attribute_functions_store store_funcs[ATTRIBUTES_NUM] = {
  */
 
 /*
- * This function checks to see if a string str is a number that is unsigned int
+ * This function checks to see if a string str is a number that is __u8
  * If True it returns the value in *num.
  * Return Value:
  * 				 0 = all good - the number is in unsigned int range
  * 				-1 = There was an error in the parsing
  */
 static __u8 checkUInt(const char *str, __u8 *num) {
-	__u8 result, status;
-	if (strlen(str) > 4) {
+	__u8 status;
+	unsigned long result;
+	if (strlen(str) > MAX_INT_LENGTH) {
 		return -1;
 	}
 	status = kstrtol(str, BASE, &result);
@@ -336,87 +340,111 @@ static __u8 checkUInt(const char *str, __u8 *num) {
 		*num = 0;
 		return -1;
 	}
-	*num = result;
+	// only first byte matters
+	result &= FIRST_BYTE;
+
+	*num = (__u8 ) result;
 	return 0;
 }
 
 /*
- * Write the descision the kernel log (with all parameters).
+ * Write the decision the kernel log (with all parameters).
+ * This function searches the log to see if already exists a similar log entry
+ * to update - if not it creates a new entry.
  */
-static void writeToLog(unsigned char packet_hooknum,
-		unsigned char packet_action, int packet_reason) {
-	int i;
-	__u16 packet_src_port = 0, packet_dst_port = 0;
+static void writeToLog(unsigned int packet_hooknum, unsigned char packet_action,
+		int packet_reason) {
+	int i = 0;
+	log_row_t *temp = kmalloc_ptr_log;
+	__be16 packet_src_port = 0, packet_dst_port = 0;
 	if (ip_header->saddr == LOCALHOST && ip_header->daddr == LOCALHOST) {
 		// self conversation - localhost - are not logged.
 		return;
 	}
+	// extracting the headers
 	if (ip_header->protocol == PROT_TCP) {
-		packet_src_port = ntohs(tcp_header->source);
-		packet_dst_port = ntohs(tcp_header->dest);
+		packet_src_port = tcp_header->source;
+		packet_dst_port = tcp_header->dest;
 	} else if (ip_header->protocol == PROT_UDP) {
-		packet_src_port = ntohs(udp_header->source);
-		packet_dst_port = ntohs(udp_header->dest);
+		packet_src_port = udp_header->source;
+		packet_dst_port = udp_header->dest;
 	}
-	log_row_t *temp = kmalloc_ptr_log;
-	for (i = 0; i < logEntriesNum; i++) {
+
+	// searching the log
+	while (temp->protocol != 0) {
 		if (htonl(temp->src_ip) == ip_header->saddr
 				&& htonl(temp->dst_ip) == ip_header->daddr
 				&& temp->protocol == ip_header->protocol
-				&& temp->hooknum == packet_hooknum
+				&& temp->hooknum == (unsigned char) packet_hooknum
 				&& temp->action == packet_action
 				&& temp->reason == packet_reason
-				&& temp->src_port == packet_src_port
-				&& temp->dst_port == packet_dst_port) {
+				&& htons(temp->src_port) == packet_src_port
+				&& htons(temp->dst_port) == packet_dst_port) {
+			// found that the entry exists - updating it.
 			updateLogEntry(i);
 			return;
 		}
+		i++;
 		temp++;
 	}
-	if (i < LOG_ENTRIES) {
-		writeNewLogEntry(i, packet_hooknum, packet_action, packet_reason);
+	// if there is a place in the table we add new entry.
+	if (i < LOG_ENTRIES - 1) {
+		writeNewLogEntry(temp, packet_hooknum, packet_action, packet_reason);
 	}
 }
 
+/*
+ * Updating the i entry in the log
+ */
 static void updateLogEntry(int i) {
 	(kmalloc_ptr_log[i].count)++;
 	do_gettimeofday(&time);
 	kmalloc_ptr_log[i].modified = time.tv_sec;
 }
 
-static void writeNewLogEntry(int i, unsigned char packet_hooknum,
+/**
+ * Creating a new log entry in the i place.
+ */
+static void writeNewLogEntry(log_row_t *temp, unsigned int packet_hooknum,
 		unsigned char packet_action, int packet_reason) {
-	log_row_t *temp = kmalloc_ptr_log;
 	__u16 packet_src_port = 0, packet_dst_port = 0;
+	// Setting the ports according the right protocol
 	if (ip_header->protocol == PROT_TCP) {
-		packet_src_port = ntohs(tcp_header->source);
-		packet_dst_port = ntohs(tcp_header->dest);
+		packet_src_port = ntohs(tcp_header->source); // from big endian to little
+		packet_dst_port = ntohs(tcp_header->dest); // from big endian to little
 	} else if (ip_header->protocol == PROT_UDP) {
-		packet_src_port = ntohs(udp_header->source);
-		packet_dst_port = ntohs(udp_header->dest);
+		packet_src_port = ntohs(udp_header->source); // from big endian to little
+		packet_dst_port = ntohs(udp_header->dest); // from big endian to little
 	} else {
 		packet_src_port = 0;
 		packet_dst_port = 0;
 	}
 	do_gettimeofday(&time);
-	temp[i].modified = time.tv_sec;
-	temp[i].protocol = ip_header->protocol;
-	temp[i].action = packet_action;
-	temp[i].hooknum = packet_hooknum;
-	temp[i].reason = packet_reason;
-	temp[i].src_ip = ntohl(ip_header->saddr); // from big endian to little
-	temp[i].dst_ip = ntohl(ip_header->daddr); // from big endian to little
+	temp->modified = (unsigned long) time.tv_sec;
+	temp->protocol = ip_header->protocol;
+	temp->action = packet_action;
+	temp->reason = packet_reason;
+	temp->src_ip = ntohl(ip_header->saddr); // from big endian to little
+	temp->dst_ip = ntohl(ip_header->daddr); // from big endian to little
+	temp->src_port = (unsigned short) packet_src_port;
+	temp->dst_port = (unsigned short) packet_dst_port;
+	temp->count = 1;
+	temp->hooknum = (unsigned char) packet_hooknum;
+}
 
-	temp[i].src_port = (unsigned short) packet_src_port; // from big endian to little
-	temp[i].dst_port = (unsigned short) packet_dst_port; // from big endian to little
-
-	temp[i].count = 1;
-	logEntriesNum++;
+/**
+ * This function clears the log.
+ */
+static void clearLog(void) {
+	memset((void *) kmalloc_ptr_log, 0, sizeof(log_row_t) * LOG_ENTRIES);
 }
 
 /*
- * This function updates the state of the conversation i to the state "state"
- * 0 == all good
+ * This function updates the state of the conversation i to the right state if
+ * all it's flags were right
+ * Return value:
+ * 				0 == all good = the connection was updated
+ * 				1 == the packet is out of state
  */
 static int updateConversation(int i) {
 	connection_t *temp;
@@ -464,21 +492,21 @@ static int updateConversation(int i) {
 		}
 		return 1;
 	}
-	return 0;
+	return 1;
 }
 
 // /*
 //  *	This function checks to see if there is an active conversation between src and dest.
 //  *	Return value:
 //  *					The place of the conversation in the conversations array >= 0
-//  *					-1 = There is no such conversation.
+//  *					-1 = There is no such conversation in the connections table
 //  */
 static int findConversation(void) {
 	int i;
+	connection_t *temp = kmalloc_ptr_connection;
 	int index = -1;
 	do_gettimeofday(&time);
 
-	connection_t *temp = kmalloc_ptr_connection;
 	index = -1;
 	for (i = 0; i < CONNECTION_TABLE_ENTRIES; i++) {
 		if (time.tv_sec <= temp->expires) {
@@ -501,6 +529,12 @@ static int findConversation(void) {
 
 }
 
+/**
+ * This function checks to see is the tcp packet is XMAS packet (according to the flags)
+ * Return value:
+ * 				1 == its a XMAS packet
+ * 				0 == it's not
+ */
 static int christmas(void) {
 	if (tcp_header->ack && tcp_header->syn && tcp_header->fin && tcp_header->psh
 			&& tcp_header->rst && tcp_header->urg && tcp_header->cwr
@@ -511,27 +545,19 @@ static int christmas(void) {
 }
 
 /*
- * This function deletes all the conections in the connection table.
+ * This function deletes all the connections in the connection table.
  * I'm assuming the delete == expires time is zero.
  */
 
 static void deleteAllConversations(void) {
-	int i;
-	connection_t *temp;
-	if (kmalloc_ptr_connection == NULL )
-		return;
-	temp = kmalloc_ptr_connection;
-	for (i = 0; i < CONNECTION_TABLE_ENTRIES; i++) {
-		temp->expires = 0;
-		temp++;
-	}
+	memset((void *) kmalloc_ptr_connection, 0,
+			sizeof(connection_t) * CONNECTION_TABLE_ENTRIES);
 }
 
 /*
  * This functions creates the conversation with src dest and seq as parameters.
  * 0 == all good
  * 1 == no space in the table
- * 2 == not right flag
  */
 static int createConversation(void) {
 	int i;
@@ -553,12 +579,19 @@ static int createConversation(void) {
 	return 1;
 }
 
+/**
+ * This function checks if the src and dst ip are the same after applying a mask.
+ * Return value:
+ * 				1 == all good
+ * 				0 == ip's are not the same
+ */
 static int cmprMask(unsigned int src_ip, unsigned int dst_ip,
 		unsigned char src_mask) {
+	unsigned int m;
 	if (src_mask == 0) {
 		return 1;
 	}
-	unsigned int m = 0xFFFFFFFF << (32 - src_mask);
+	m = ALL_BITS_ARE_ONES >> (32 - src_mask);
 	if ((src_ip & m) == (dst_ip & m)) {
 		return 1;
 	} else {
@@ -573,14 +606,19 @@ static int cmprMask(unsigned int src_ip, unsigned int dst_ip,
  * Return value:
  *				0 = src and dest are allowed to converse.
  *				1 = src and dest are *NOT* allowed to converse.
- *				-1 = christmas egg?
+ *				2 = no matching rule was found
  */
 static int checkRules(char zeroe_ports) {
 	rule_t *temp;
-	rule_num = 0;
-	__u8 protocol = 0, src_mask, dst_mask, action;
-	__be16 src_port, dst_port, packet_src_port = 0, packet_dst_port = 0;
+	__u8 src_mask, dst_mask, action, protocol;
+	__be16 src_port, dst_port, packet_src_port, packet_dst_port;
 	__be32 src_ip, dst_ip;
+
+	packet_src_port = 0;
+	packet_dst_port = 0;
+	protocol = 0;
+	rule_num = 0;
+
 	if (ip_header->protocol == PROT_TCP) {
 		packet_src_port = tcp_header->source;
 		packet_dst_port = tcp_header->dest;
@@ -591,8 +629,11 @@ static int checkRules(char zeroe_ports) {
 
 	// We have rules to check! Woohoo!
 	temp = kmalloc_ptr_rule;
-	while (protocol != 255) {
+	while (protocol != LAST_RULE_PROTOCOL_ENTRY) {
 		protocol = temp->protocol;
+		if (protocol == LAST_RULE_PROTOCOL_ENTRY) {
+			continue;
+		}
 		src_mask = temp->src_mask;
 		dst_mask = temp->dst_mask;
 		action = temp->action;
@@ -602,6 +643,10 @@ static int checkRules(char zeroe_ports) {
 		dst_ip = temp->dst_ip;
 		temp++;
 
+		if (protocol != ip_header->protocol && !zeroe_ports) {
+			rule_num++;
+			continue;
+		}
 		if (ip_header->protocol == PROT_TCP
 				|| ip_header->protocol == PROT_UDP) {
 			if (src_port != 0 && dst_port != 0) {
@@ -644,6 +689,12 @@ static int checkRules(char zeroe_ports) {
 	return 2;
 }
 
+/*
+ * This function sets the configuration bits according to what was written to the
+ * device.
+ * Also it calculates the unsigned int representation of those bits
+ * (because it's doesn't always look like config in numer form)
+ */
 static unsigned int setConfigBits(char *config) {
 	__u8 temp;
 	unsigned int result;
@@ -683,28 +734,11 @@ static int returnBit(__u8 flag, int i) {
 	return 0;
 }
 
+/*
+ * This function returns the configuration bits as a number
+ */
 static unsigned int showConfigurationBits(void) {
 	return configBitsAsNumber;
-}
-
-static void clearLog(void) {
-	int i;
-	log_row_t *temp = kmalloc_ptr_log;
-	for (i = 0; i < logEntriesNum; i++) {
-		temp->protocol = 0;
-		temp->modified = 0;
-		temp->protocol = 0;
-		temp->action = 0;
-		temp->hooknum = 0;
-		temp->src_ip = 0;
-		temp->dst_ip = 0;
-		temp->src_port = 0;
-		temp->dst_port = 0;
-		temp->reason = 0;
-		temp->count = 0;
-		temp++;
-	}
-	logEntriesNum = 0;
 }
 
 // ****************************************************************************
@@ -731,7 +765,7 @@ static ssize_t rules_config_store(struct device *dev,
 	status = setConfigBits(config);
 	if (status != 0) {
 		// bad input to configuration - we ignore it.
-		printk("wTf\n");
+		printk("FW4: bad input as configuration bits (wTf?!)\n");
 	}
 	kfree(config);
 	return count;
@@ -766,7 +800,7 @@ static ssize_t log_clear_show(struct device *dev, struct device_attribute *attr,
 
 static ssize_t log_clear_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count) {
-	if (count == 1)
+	if (count >= 1)
 		clearLog();
 	return count;
 }
@@ -789,8 +823,7 @@ static ssize_t conn_tab_clear_show(struct device *dev,
 
 static ssize_t conn_tab_clear_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count) {
-
-	if (count == 2)
+	if (count >= 1)
 		deleteAllConversations();
 	return count;
 }
@@ -998,6 +1031,7 @@ static void destroy_device(struct fw_dev *dev, int minor, struct class *class) {
 	return;
 }
 
+// ***** 5 cleanup function - clear all device, attributes and class *****
 static void classCleanUp(void) {
 	if (fw_class)
 		class_destroy(fw_class);
@@ -1030,7 +1064,7 @@ static void classAndDevicesAndAttributesCleanUP(void) {
 	int i;
 	int j = -1;
 	for (i = 0; i < attributes_to_destroy; i++) {
-		if (i % 2 == 0)
+		if (i % ATTRIBUTES_PER_DEVICE == 0)
 			j++;
 		device_remove_file(devices[j].dev, &dev_attr[i]);
 		kfree(attr[i].name);
@@ -1038,9 +1072,13 @@ static void classAndDevicesAndAttributesCleanUP(void) {
 	classAndDevicesAndAttrubuteStructCleanUP();
 }
 
+/*
+ * This function creates the three initial rules
+ * of localhost communication
+ */
 static void loadInitialRules(void) {
 	int i;
-	__u8 prot[] = { PROT_ICMP, PROT_TCP, PROT_UDP, 255 };
+	__u8 prot[] = { PROT_ICMP, PROT_TCP, PROT_UDP, LAST_RULE_PROTOCOL_ENTRY };
 
 	for (i = 0; i < 4; i++) {
 		kmalloc_ptr_rule[i].protocol = prot[i];
@@ -1054,75 +1092,86 @@ static void loadInitialRules(void) {
 	}
 }
 
+/**
+ * This function decides the packet fate - the heart of the mechanism.
+ * The function writes the packet to log, updates the connection table
+ * is neccesary and return the verdict.
+ *
+ * Return value:
+ * 				The verdict: NF_ACCEPT or NF_DROP
+ */
 static unsigned int hook_func(unsigned int hooknum, struct sk_buff *skb,
 		const struct net_device *in, const struct net_device *out,
 		int (*okfn)(struct sk_buff *)) {
 	int result = 0;
 	sock_buff = skb;
-	hook_num = hooknum;
 	ip_header = ip_hdr(sock_buff);
 
+	// Checking to see if we're in IPV4
 	if (ip_header->version != IPV4) {
 		writeToLog(hooknum, NF_ACCEPT, REASON_NOT_IPV4);
 		return NF_DROP;
 	}
+	// Extracting the right headers
 	if (ip_header->protocol == PROT_TCP) {
 		tcp_header =
 				(struct tcphdr*) ((char*) ip_header + (ip_header->ihl * 4));
 	} else if (ip_header->protocol == PROT_UDP) {
 		udp_header =
 				(struct udphdr*) ((char*) ip_header + (ip_header->ihl * 4));
-		//udp_header = udp_hdr(sock_buff);
 	}
+
+	// Checking to see if the firewall is off.
 	if (active == 0) {
 		writeToLog(hooknum, NF_ACCEPT, REASON_FW_INACTIVE);
 		return NF_ACCEPT;
 	}
-	if (ip_header->saddr == LOCALHOST) {
-		return NF_ACCEPT;
-	}
+
+	// starting the check for different protocols
 
 	if (ip_header->protocol == PROT_TCP && tcp_active) {
-		//check rules
-		result = checkRules(0);
+		// The packe is TCP protocol and TCP enfircement is on.
+
+		// Checking the packet according to the rules
+		result = checkRules(0); //checking thes rules
 		if (result == NF_DROP) {
 			writeToLog(hooknum, NF_DROP, rule_num);
 			return NF_DROP;
-		} else if (result == 2) {
+		} else if (result == NO_MATCHING_RULE_FOUND) {
 			if (cleanup_accept == 0) {
 				writeToLog(hooknum, NF_DROP, REASON_NO_MATCHING_RULE);
 				return NF_DROP;
 			}
 		}
-		//check christmas paket
+
+		// Checking to see if it is a XMAS packet
 		if (christmas()) {
 			writeToLog(hooknum, NF_DROP, REASON_XMAS_PACKET);
 			return NF_DROP;
 		}
+		// checking if we are the localhost
+		if (ip_header->saddr == LOCALHOST) {
+			return NF_ACCEPT;
+		}
 		if (conn_track) {
 			int conn = findConversation();
-			printk("found conversation: %d\n", conn);
 			if (conn == -1) {
-				//create connection
-				printk("create conversation: syn %u ack %u fin %u rst %u\n",
-						tcp_header->syn, tcp_header->ack, tcp_header->fin,
-						tcp_header->rst);
+				//create connection if the flags are right
 				if (tcp_header->syn == 1 && tcp_header->ack == 0) {
 					result = createConversation();
-					printk("create conversation: result %d\n", result);
 					if (result == 1) {
 						writeToLog(hooknum, NF_DROP,
 								REASON_CONNECTION_TABLE_FULL);
 						return NF_DROP;
 					}
 				} else {
-					//out of connection
-					printk("TCP out of connection\n");
+					// we are out of connection
+					//printk("TCP out of connection\n");
 					writeToLog(hooknum, NF_DROP, REASON_OUT_OF_STATE);
 					return NF_DROP;
 				}
 			} else {
-				//connection exists
+				//connection exists - we update it if we need to
 				result = updateConversation(conn);
 				if (result == 1) {
 					writeToLog(hooknum, NF_DROP, REASON_OUT_OF_STATE);
@@ -1133,46 +1182,49 @@ static unsigned int hook_func(unsigned int hooknum, struct sk_buff *skb,
 		}
 
 	} else if (ip_header->protocol == PROT_TCP && !tcp_active) {
+		// This is a TCP protocol but it's not enforced
 		writeToLog(hooknum, NF_ACCEPT, REASON_PROT_NOT_ENFORCED);
 		return NF_ACCEPT;
 
 	} else if (ip_header->protocol == PROT_UDP && udp) {
-		//check rules
-		result = checkRules(0);
+		// This is a UDP protocol and it's enforced
+		result = checkRules(0); //checking the rules
 		if (result == 0) {
 			writeToLog(hooknum, NF_DROP, rule_num);
 			return NF_DROP;
-		} else if (result == 2) {
+		} else if (result == NO_MATCHING_RULE_FOUND) {
 			if (cleanup_accept == 0) {
 				writeToLog(hooknum, NF_DROP, REASON_NO_MATCHING_RULE);
 				return NF_DROP;
 			}
 		}
 	} else if (ip_header->protocol == PROT_UDP && !udp) {
+		// This is a UDP protocol but it's not enforced
 		writeToLog(hooknum, NF_ACCEPT, REASON_PROT_NOT_ENFORCED);
 		return NF_ACCEPT;
 	} else if (ip_header->protocol == PROT_ICMP && icmp) {
-		//check rules
-		result = checkRules(0);
+		// This is a ICMP protocol and it's enforced
+		result = checkRules(0); //checking the rules
 		if (result == 0) {
 			writeToLog(hooknum, NF_DROP, rule_num);
 			return NF_DROP;
-		} else if (result == 2) {
+		} else if (result == NO_MATCHING_RULE_FOUND) {
 			if (cleanup_accept == 0) {
 				writeToLog(hooknum, NF_DROP, REASON_NO_MATCHING_RULE);
 				return NF_DROP;
 			}
 		}
 	} else if (ip_header->protocol == PROT_ICMP && !icmp) {
+		// This is a ICMP protocol but it's not enforced
 		writeToLog(hooknum, NF_ACCEPT, REASON_PROT_NOT_ENFORCED);
 		return NF_ACCEPT;
 	} else {
-		//check rules with zeroed ports
-		result = checkRules(1);
+		// This is unknowns to us protocol
+		result = checkRules(1); //check rules with zeroed ports
 		if (result == 0) {
 			writeToLog(hooknum, NF_DROP, rule_num);
 			return NF_DROP;
-		} else if (result == 2) {
+		} else if (result == NO_MATCHING_RULE_FOUND) {
 			if (cleanup_accept == 0) {
 				writeToLog(hooknum, NF_DROP, REASON_NO_MATCHING_RULE);
 				return NF_DROP;
@@ -1180,6 +1232,7 @@ static unsigned int hook_func(unsigned int hooknum, struct sk_buff *skb,
 		}
 	}
 
+	// If we're here we accept the packet with the right reason.
 	if (rule_num == -1) {
 		writeToLog(hooknum, NF_ACCEPT, REASON_NO_MATCHING_RULE);
 		return NF_ACCEPT;
@@ -1192,12 +1245,17 @@ static unsigned int hook_func(unsigned int hooknum, struct sk_buff *skb,
  * loader - This is the initial loader function that creates the class, devices, attributes and all the other stuff.
  */
 static int hello_init(void) {
-	int i;
-	int j;
+	int i, j;
 	int err = 0;
 	dev_t dev = 0;
-// TODO: check not ipv4
+	char *rules[] = { PERMISSION_PARAM_1, PERMISSION_PARAM_2,
+			PERMISSION_PARAM_3_A, NULL };
+	char *log[] = { PERMISSION_PARAM_1, PERMISSION_PARAM_2,
+			PERMISSION_PARAM_3_B, NULL };
+	char *conn[] = { PERMISSION_PARAM_1, PERMISSION_PARAM_2,
+			PERMISSION_PARAM_3_C, NULL };
 
+	// initializing netfilter variables
 	nfho_forward.hook = hook_func;
 	nfho_forward.hooknum = NF_INET_FORWARD;
 	nfho_forward.pf = PF_INET;
@@ -1206,7 +1264,7 @@ static int hello_init(void) {
 	nfho_in.hook = hook_func;
 	nfho_in.hooknum = NF_INET_LOCAL_IN;
 	nfho_in.pf = PF_INET;
-	nfho_in.priority = 0;
+	nfho_in.priority = NF_IP_PRI_FIRST;
 	nf_register_hook(&nfho_in);
 	nfho_out.hook = hook_func;
 	nfho_out.hooknum = NF_INET_LOCAL_OUT;
@@ -1214,6 +1272,7 @@ static int hello_init(void) {
 	nfho_out.priority = NF_IP_PRI_FIRST;
 	nf_register_hook(&nfho_out);
 
+	// class creating
 	alloc_chrdev_region(&dev, 0, DEVICES_NUM, CLASS_NAME);
 	major = MAJOR(dev);
 	fw_class = class_create(THIS_MODULE, CLASS_NAME);
@@ -1243,7 +1302,6 @@ static int hello_init(void) {
 	}
 	devices_to_destroy++;
 
-	char *rules[] = { "/bin/bash", "-c", "/bin/chmod 666 /dev/fw4_rules", NULL };
 	call_usermodehelper(rules[0], rules, 0, UMH_WAIT_PROC);
 
 	err = construct_device(&devices[DEVICE_LOG], MINOR_LOG, fw_class,
@@ -1254,7 +1312,7 @@ static int hello_init(void) {
 		return 1;
 	}
 	devices_to_destroy++;
-	char *log[] = { "/bin/bash", "-c", "/bin/chmod 644 /dev/fw4_log", NULL };
+
 	call_usermodehelper(log[0], log, 0, UMH_WAIT_PROC);
 
 	err = construct_device(&devices[DEVICE_CONN_TAB], MINOR_CONN_TAB, fw_class,
@@ -1265,8 +1323,7 @@ static int hello_init(void) {
 		return 1;
 	}
 	devices_to_destroy++;
-	char *conn[] =
-			{ "/bin/bash", "-c", "/bin/chmod 644 /dev/fw4_conn_tab", NULL };
+
 	call_usermodehelper(conn[0], conn, 0, UMH_WAIT_PROC);
 
 	dev_attr = (struct device_attribute *) kzalloc(
@@ -1278,7 +1335,6 @@ static int hello_init(void) {
 		return 1;
 	}
 
-// TODO: to add attrubute structs cleanup!!!!
 	attr = (struct attribute *) kzalloc(
 			ATTRIBUTES_NUM * sizeof(struct attribute), GFP_KERNEL);
 	if (attr == NULL ) {
@@ -1289,10 +1345,10 @@ static int hello_init(void) {
 	}
 
 	j = -1;
-//creatint the attribute files
+	//creatint the attribute files
 	for (i = 0; i < ATTRIBUTES_NUM; i++) {
 		memset(&dev_attr[i], 0, sizeof(struct device_attribute));
-		attr[i].mode = PERMISSIONS[i] /*PERMISSION*/;
+		attr[i].mode = PERMISSIONS[i];
 		attr[i].name = (char *) kmalloc(sizeof(char) * NAME_MAX_COPY,
 				GFP_KERNEL);
 		if (attr[i].name == NULL ) {
@@ -1302,11 +1358,11 @@ static int hello_init(void) {
 			return 1;
 		}
 
-		if (i % 2 == 0) {
+		if (i % ATTRIBUTES_PER_DEVICE == 0) {
 			j++;
 		}
 
-		strncpy(attr[i].name, attr_names[i], NAME_MAX_COPY);
+		strncpy((char *) attr[i].name, attr_names[i], NAME_MAX_COPY);
 		dev_attr[i].attr = attr[i];
 		dev_attr[i].show = show_funcs[i];
 		dev_attr[i].store = store_funcs[i];
